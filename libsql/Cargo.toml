@@ -35,7 +35,6 @@ bytes = { version = "1.4.0", features = ["serde"], optional = true }
 uuid = { version = "1.4.0", features = ["v4", "serde"], optional = true }
 tokio-stream = { version = "0.1.14", optional = true }
 tonic = { version = "0.12", optional = true}
-tonic-web = { version = "0.12", optional = true }
 tower-http = { version = "0.5", features = ["trace", "set-header", "util"], optional = true }
 http = { version = "1.0", optional = true }
 zerocopy = { version = "0.7.28", optional = true }
@@ -95,7 +94,6 @@ replication = [
   "dep:parking_lot",
   "dep:tokio",
   "dep:tonic",
-  "dep:tonic-web",
   "dep:tower-http",
   "dep:futures",
   "dep:libsql_replication",

@@ -17,7 +17,8 @@ concurrency:
 
 jobs:
   c-tests:
-    runs-on: ubuntu-latest
+    # The CR-SQLite bindings use bindgen 0.68, which fails on Ubuntu 26.04.
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: libsql-sqlite3
@@ -41,7 +42,7 @@ jobs:
           make test
 
   rs-tests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: libsql-sqlite3
@@ -61,7 +62,8 @@ jobs:
           cargo test --features=loadable_extension
 
   extensions-tests:
-    runs-on: ubuntu-latest
+    # The extension suite builds an older WABT that needs CMake 3 compatibility.
+    runs-on: ubuntu-24.04
     name: Extensions Tests
 
     steps:
