@@ -11,13 +11,15 @@ tracing = { version = "0.1.37", default-features = false }
 thiserror = "1.0.40"
 
 futures = { version = "0.3.28", optional = true }
-libsql-sys = { version = "0.8", path = "../libsql-sys", optional = true }
-libsql-hrana = { version = "0.2", path = "../libsql-hrana", optional = true }
+libsql-sys = { version = "0.8", optional = true }
+libsql-hrana = { version = "0.2", optional = true }
 tokio = { version = "1.29.1", features = ["sync"], optional = true }
 tokio-util = { version = "0.7", features = ["io-util", "codec"], optional = true }
 parking_lot = { version = "0.12.1", optional = true }
-hyper = { version = "0.14", features = ["client", "http1", "http2", "stream", "runtime"], optional = true }
-hyper-rustls = { version = "0.25", features = ["webpki-roots"], optional = true }
+hyper = { version = "1", features = ["client", "http1"], optional = true }
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"], optional = true }
+http-body-util = { version = "0.1", optional = true }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "native-tokio", "ring", "tls12", "logging"], optional = true }
 base64 = { version = "0.21", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", features = ["float_roundtrip"], optional = true }
@@ -34,13 +36,13 @@ tokio-stream = { version = "0.1.14", optional = true }
 tonic = { version = "0.11", optional = true}
 tonic-web = { version = "0.11", optional = true }
 tower-http = { version = "0.4.4", features = ["trace", "set-header", "util"], optional = true }
-http = { version = "0.2", optional = true }
+http = { version = "1", optional = true }
 zerocopy = { version = "0.7.28", optional = true }
 
-sqlite3-parser = { package = "libsql-sqlite3-parser", path = "../vendored/sqlite3-parser", version = "0.13", optional = true }
+sqlite3-parser = { package = "libsql-sqlite3-parser", version = "0.13", optional = true }
 fallible-iterator = { version = "0.3", optional = true }
 
-libsql_replication = { version = "0.6", path = "../libsql-replication", optional = true }
+libsql_replication = { version = "0.6", optional = true }
 async-stream = { version = "0.3.5", optional = true }
 
 [dev-dependencies]
@@ -53,7 +55,7 @@ tempfile = { version = "3.7.0" }
 rand = "0.8.5"
 
 [features]
-default = ["core", "replication", "remote", "tls"]
+default = ["core", "remote", "tls"]
 core = [
   "libsql-sys",
   "dep:bitflags",
@@ -108,7 +110,8 @@ remote = [
   "hrana",
   "dep:tower",
   "dep:hyper",
-  "dep:hyper",
+  "dep:hyper-util",
+  "dep:http-body-util",
   "dep:http",
   "dep:tokio",
   "dep:futures",

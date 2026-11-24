@@ -13,7 +13,10 @@ use futures::future::BoxFuture;
 use futures::{Stream, TryStreamExt};
 use http::header::AUTHORIZATION;
 use http::{HeaderValue, StatusCode};
-use hyper::body::HttpBody;
+use http_body_util::{BodyExt, Full};
+use hyper::body::Body;
+use hyper_util::client::legacy::Client;
+use hyper_util::rt::{TokioExecutor, TokioTimer};
 use std::io::ErrorKind;
 use std::sync::Arc;
 
@@ -23,7 +26,7 @@ pub type ByteStream = Box<dyn Stream<Item = std::io::Result<Bytes>> + Send + Syn
 
 #[derive(Clone, Debug)]
 pub struct HttpSender {
-    inner: hyper::Client<ConnectorService, hyper::Body>,
+    inner: Client<ConnectorService, Full<Bytes>>,
     version: HeaderValue,
 }
 
@@ -33,7 +36,9 @@ impl HttpSender {
 
         let version = HeaderValue::try_from(format!("libsql-remote-{ver}")).unwrap();
 
-        let inner = hyper::Client::builder().build(connector);
+        let inner = Client::builder(TokioExecutor::new())
+            .pool_timer(TokioTimer::new())
+            .build(connector);
 
         Self { inner, version }
     }
@@ -47,28 +52,34 @@ impl HttpSender {
         let req = hyper::Request::post(url.as_ref())
             .header(AUTHORIZATION, auth.as_ref())
             .header("x-libsql-client-version", self.version.clone())
-            .body(hyper::Body::from(body))
+            .body(Full::new(Bytes::from(body)))
             .map_err(|err| HranaError::Http(format!("{:?}", err)))?;
 
         let resp = self.inner.request(req).await.map_err(HranaError::from)?;
 
         if resp.status() != StatusCode::OK {
-            let body = hyper::body::to_bytes(resp.into_body())
+            let body = resp
+                .into_body()
+                .collect()
                 .await
-                .map_err(HranaError::from)?;
+                .map_err(HranaError::from)?
+                .to_bytes();
             let body = String::from_utf8(body.into()).unwrap();
             return Err(HranaError::Api(body));
         }
 
         let body: super::HttpBody<ByteStream> = if resp.is_end_stream() {
-            let body = hyper::body::to_bytes(resp.into_body())
+            let body = resp
+                .into_body()
+                .collect()
                 .await
-                .map_err(HranaError::from)?;
+                .map_err(HranaError::from)?
+                .to_bytes();
             super::HttpBody::from(body)
         } else {
             let stream = resp
                 .into_body()
-                .into_stream()
+                .into_data_stream()
                 .map_err(|e| std::io::Error::new(ErrorKind::Other, e));
             super::HttpBody::Stream(Box::new(stream))
         };
@@ -95,9 +106,27 @@ impl HttpSend for HttpSender {
     }
 }
 
+impl From<hyper_util::client::legacy::Error> for HranaError {
+    fn from(value: hyper_util::client::legacy::Error) -> Self {
+        http_error(&value)
+    }
+}
+
+fn http_error(value: &dyn std::error::Error) -> HranaError {
+    use std::fmt::Write;
+
+    let mut message = value.to_string();
+    let mut source = value.source();
+    while let Some(cause) = source {
+        let _ = write!(message, ": {cause}");
+        source = cause.source();
+    }
+    HranaError::Http(message)
+}
+
 impl From<hyper::Error> for HranaError {
     fn from(value: hyper::Error) -> Self {
-        HranaError::Http(value.to_string())
+        http_error(&value)
     }
 }
 
