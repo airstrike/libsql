@@ -22,7 +22,7 @@ use libsql_server::Server;
 type TurmoilAddrStream = AddrStream<turmoil::net::TcpStream>;
 
 pub struct TurmoilAcceptor {
-    incoming: Pin<Box<dyn Stream<Item = std::io::Result<TurmoilAddrStream>> + Send>>,
+    incoming: Pin<Box<dyn Stream<Item = std::io::Result<TurmoilAddrStream>> + Send + Sync>>,
 }
 
 impl TurmoilAcceptor {

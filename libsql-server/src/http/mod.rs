@@ -90,3 +90,6 @@ async fn serve<A: Accept>(mut acceptor: A, router: Router, shutdown: Arc<Notify>
     }
     graceful.shutdown().await;
 }
+
+#[cfg(test)]
+mod tests;
