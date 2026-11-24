@@ -72,21 +72,25 @@ jobs:
 
     - name: Start sqld server
       run: |
-        ./target/release/sqld --http-listen-addr 127.0.0.1:8080 --grpc-listen-addr 127.0.0.1:5001 &
-        # Wait for server to be ready
+        sqld_log="$RUNNER_TEMP/sqld.log"
+        ./target/release/sqld --http-listen-addr 127.0.0.1:8080 > "$sqld_log" 2>&1 &
+        sqld_pid=$!
         for i in {1..30}; do
-          if curl -s http://127.0.0.1:8080/health > /dev/null 2>&1; then
-            echo "Server is ready!"
+          if curl --fail --silent --max-time 2 http://127.0.0.1:8080/health > /dev/null; then
+            exit 0
+          fi
+          if ! kill -0 "$sqld_pid"; then
             break
           fi
           echo "Waiting for server... ($i/30)"
           sleep 1
         done
-        # Give server a bit more time to fully initialize gRPC
-        sleep 2
+        echo "sqld failed its health check"
+        cat "$sqld_log"
+        exit 1
 
     - name: Run go-libsql tests
       working-directory: go-libsql
       run: go test -v -count=1 ./...
       env:
-        LIBSQL_PRIMARY_URL: "http://127.0.0.1:5001"
+        LIBSQL_PRIMARY_URL: "http://127.0.0.1:8080"
