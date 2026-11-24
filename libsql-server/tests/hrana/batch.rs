@@ -556,12 +556,15 @@ where
             };
 
             let server = make_server();
-
+            let shutdown = server.shutdown.clone();
+            let running = server.start_sim(8080);
+            tokio::pin!(running);
             tokio::select! {
-                res = server.start_sim(8080) => {
-                    res.unwrap()
+                result = &mut running => result?,
+                _ = notify.notified() => {
+                    shutdown.notify_waiters();
+                    running.await?;
                 }
-                _ = notify.notified() => (),
             }
 
             let server = make_server();

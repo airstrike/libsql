@@ -3,6 +3,8 @@ use std::task::{Context, Poll};
 
 use anyhow::Context as _;
 use http::Uri;
+use hyper::body::Incoming;
+use hyper_util::{client::legacy, rt::TokioExecutor};
 use libsql_replication::rpc::proxy::{
     proxy_client::ProxyClient, DescribeRequest, DescribeResult, ExecuteResults, ProgramReq,
 };
@@ -16,7 +18,7 @@ use tonic::{
 use tonic_web::{GrpcWebCall, GrpcWebClientService};
 use tower::{Service, ServiceBuilder};
 use tower_http::{
-    classify::{self, GrpcCode, GrpcErrorsAsFailures, SharedClassifier},
+    classify::{GrpcCode, GrpcEosErrorsAsFailures, GrpcErrorsAsFailures, SharedClassifier},
     trace::{self, TraceLayer},
 };
 use uuid::Uuid;
@@ -25,9 +27,9 @@ use crate::util::{ConnectorService, HttpRequestCallback};
 
 use crate::util::box_clone_service::BoxCloneService;
 
-type ResponseBody = trace::ResponseBody<
-    GrpcWebCall<hyper::Body>,
-    classify::GrpcEosErrorsAsFailures,
+type GrpcWebResponseBody = trace::ResponseBody<
+    GrpcWebCall<Incoming>,
+    GrpcEosErrorsAsFailures,
     trace::DefaultOnBodyChunk,
     trace::DefaultOnEos,
     trace::DefaultOnFailure,
@@ -128,7 +130,7 @@ impl Client {
 
 #[derive(Debug, Clone)]
 pub struct GrpcChannel {
-    client: BoxCloneService<http::Request<BoxBody>, http::Response<ResponseBody>, hyper::Error>,
+    client: BoxCloneService<http::Request<BoxBody>, http::Response<BoxBody>, legacy::Error>,
 }
 
 impl GrpcChannel {
@@ -136,15 +138,17 @@ impl GrpcChannel {
         connector: ConnectorService,
         http_request_callback: Option<HttpRequestCallback>,
     ) -> Self {
-        let client = hyper::Client::builder()
+        let client = legacy::Client::builder(TokioExecutor::new())
             .pool_idle_timeout(None)
             .pool_max_idle_per_host(3)
             .build(connector);
         let client = GrpcWebClientService::new(client);
-
         let classifier = GrpcErrorsAsFailures::new().with_success(GrpcCode::FailedPrecondition);
 
         let svc = ServiceBuilder::new()
+            .map_response(|response: http::Response<GrpcWebResponseBody>| {
+                response.map(tonic::body::boxed)
+            })
             .layer(TraceLayer::new(SharedClassifier::new(classifier)))
             .map_request(move |request: http::Request<BoxBody>| {
                 if let Some(cb) = &http_request_callback {
@@ -168,8 +172,8 @@ impl GrpcChannel {
 }
 
 impl Service<http::Request<BoxBody>> for GrpcChannel {
-    type Response = http::Response<ResponseBody>;
-    type Error = hyper::Error;
+    type Response = http::Response<BoxBody>;
+    type Error = legacy::Error;
     type Future =
         Pin<Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 

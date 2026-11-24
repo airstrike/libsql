@@ -1,17 +1,20 @@
-use anyhow::Context as _;
-use axum::body::StreamBody;
+use axum::body::Body;
 use axum::extract::{FromRef, Path, State};
 use axum::middleware::Next;
+use axum::response::Response;
 use axum::routing::delete;
 use axum::Json;
+use bytes::Bytes;
 use chrono::NaiveDateTime;
-use futures::{SinkExt, StreamExt, TryStreamExt};
-use hyper::{Body, Request, StatusCode};
+use futures::{SinkExt, StreamExt};
+use http::{Request, StatusCode};
+use http_body_util::BodyExt;
+use hyper_util::client::legacy::Client as HyperClient;
+use hyper_util::rt::TokioExecutor;
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::cell::OnceCell;
-use std::convert::Infallible;
 use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -190,26 +193,24 @@ where
     let admin_shell = crate::admin_shell::make_svc(namespaces.clone());
     let grpc_router = tonic::transport::Server::builder()
         .accept_http1(true)
-        .add_service(tonic_web::enable(admin_shell))
-        .into_router();
+        .add_service(tonic_web::enable(admin_shell));
+    // Convert to axum Router - into_router() is deprecated but functional
+    #[allow(deprecated)]
+    let grpc_router = grpc_router.into_router();
 
     let router = router
         .merge(grpc_router)
         .layer(axum::middleware::from_fn_with_state(auth, auth_middleware));
 
-    hyper::server::Server::builder(acceptor)
-        .serve(router.into_make_service())
-        .with_graceful_shutdown(shutdown.notified())
-        .await
-        .context("Could not bind admin HTTP API server")?;
+    super::serve(acceptor, router, shutdown, false).await;
 
     Ok(())
 }
 
-async fn auth_middleware<B>(
+async fn auth_middleware(
     State(auth): State<Option<Arc<str>>>,
-    request: Request<B>,
-    next: Next<B>,
+    request: Request<axum::body::Body>,
+    next: Next,
 ) -> Result<axum::response::Response, StatusCode> {
     if let Some(ref auth) = auth {
         let Some(auth_header) = request.headers().get("authorization") else {
@@ -476,15 +477,16 @@ where
 {
     match url.scheme() {
         "http" | "https" => {
-            let client = hyper::client::Client::builder().build::<_, Body>(connector);
+            let client: HyperClient<C, http_body_util::Empty<Bytes>> =
+                HyperClient::builder(TokioExecutor::new()).build(connector);
             let uri = url
                 .as_str()
                 .parse()
                 .map_err(|_| LoadDumpError::InvalidDumpUrl)?;
             let resp = client.get(uri).await?;
-            let body = resp
-                .into_body()
-                .map_err(|e| std::io::Error::new(ErrorKind::Other, e));
+            // Convert hyper body to a stream of io::Result<Bytes>
+            let body_stream = resp.into_body().into_data_stream();
+            let body = body_stream.map(|r| r.map_err(|e| std::io::Error::new(ErrorKind::Other, e)));
             Ok(Box::new(body))
         }
         "file" => {
@@ -578,7 +580,7 @@ async fn enable_profile_heap(Json(req): Json<EnableHeapProfileRequest>) -> crate
     Ok(path.file_name().unwrap().to_str().unwrap().to_string())
 }
 
-async fn disable_profile_heap(Path(profile): Path<String>) -> impl axum::response::IntoResponse {
+async fn disable_profile_heap(Path(profile): Path<String>) -> Response<Body> {
     let (tx, rx) = tokio::sync::mpsc::channel::<bytes::Bytes>(1);
     tokio::task::spawn_blocking(move || {
         rheaper::disable_tracking();
@@ -597,11 +599,10 @@ async fn disable_profile_heap(Path(profile): Path<String>) -> impl axum::respons
         }
     });
 
-    let stream =
-        tokio_stream::wrappers::ReceiverStream::new(rx).map(|b| Result::<_, Infallible>::Ok(b));
-    let body = StreamBody::new(stream);
-
-    body
+    let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+    // Wrap items in Result for TryStream compatibility
+    let stream = stream.map(|b| Ok::<_, std::io::Error>(b));
+    Response::builder().body(Body::from_stream(stream)).unwrap()
 }
 
 async fn delete_profile_heap(Path(profile): Path<String>) -> crate::Result<()> {

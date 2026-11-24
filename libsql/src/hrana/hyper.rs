@@ -10,11 +10,13 @@ use crate::util::ConnectorService;
 use crate::{Error, Rows, Statement};
 use bytes::Bytes;
 use futures::future::BoxFuture;
-use futures::{Stream, TryStreamExt};
+use futures::Stream;
+use futures::TryStreamExt;
 use http::header::AUTHORIZATION;
 use http::{HeaderValue, StatusCode};
-use hyper::body::HttpBody;
-use std::io::ErrorKind;
+use http_body_util::BodyExt;
+use hyper::body::Body as _;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -24,7 +26,7 @@ pub type ByteStream = Box<dyn Stream<Item = std::io::Result<Bytes>> + Send + Syn
 
 #[derive(Clone, Debug)]
 pub struct HttpSender {
-    inner: hyper::Client<ConnectorService, hyper::Body>,
+    inner: hyper_util::client::legacy::Client<ConnectorService, http_body_util::Full<bytes::Bytes>>,
     version: HeaderValue,
     namespace: Option<HeaderValue>,
     #[cfg(any(feature = "remote", feature = "sync"))]
@@ -45,7 +47,9 @@ impl HttpSender {
         let version = HeaderValue::try_from(format!("libsql-remote-{ver}")).unwrap();
         let namespace = namespace.map(|v| HeaderValue::try_from(v).unwrap());
 
-        let inner = hyper::Client::builder().build(connector);
+        let inner = hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+            .pool_timer(hyper_util::rt::TokioTimer::new())
+            .build(connector);
         Self {
             inner,
             version,
@@ -76,34 +80,29 @@ impl HttpSender {
         }
 
         let req = req_builder
-            .body(hyper::Body::from(body))
+            .body(http_body_util::Full::new(bytes::Bytes::from(body)))
             .map_err(|err| HranaError::Http(format!("{:?}", err)))?;
 
         let resp = self.inner.request(req).await.map_err(HranaError::from)?;
 
         let status = resp.status();
         if status != StatusCode::OK {
-            let body = hyper::body::to_bytes(resp.into_body())
+            let body = http_body_util::BodyExt::collect(resp.into_body())
                 .await
-                .map_err(HranaError::from)?;
-            let body = String::from_utf8(body.into()).unwrap();
+                .map_err(HranaError::from)?
+                .to_bytes();
+            let body = String::from_utf8_lossy(&body);
             return Err(HranaError::Api(format!("status={}, body={}", status, body)));
         }
 
-        let body: super::HttpBody<ByteStream> = if resp.is_end_stream() {
-            let body = hyper::body::to_bytes(resp.into_body())
-                .await
-                .map_err(HranaError::from)?;
-            super::HttpBody::from(body)
+        let body = resp.into_body();
+        if body.is_end_stream() {
+            let bytes = body.collect().await.map_err(HranaError::from)?.to_bytes();
+            Ok(super::HttpBody::from(bytes))
         } else {
-            let stream = resp
-                .into_body()
-                .into_stream()
-                .map_err(|e| std::io::Error::new(ErrorKind::Other, e));
-            super::HttpBody::Stream(Box::new(stream))
-        };
-
-        Ok(body)
+            let stream = body.into_data_stream().map_err(std::io::Error::other);
+            Ok(super::HttpBody::Stream(Box::new(stream)))
+        }
     }
 }
 
@@ -127,6 +126,12 @@ impl HttpSend for HttpSender {
 
 impl From<hyper::Error> for HranaError {
     fn from(value: hyper::Error) -> Self {
+        HranaError::Http(value.to_string())
+    }
+}
+
+impl From<hyper_util::client::legacy::Error> for HranaError {
+    fn from(value: hyper_util::client::legacy::Error) -> Self {
         HranaError::Http(value.to_string())
     }
 }

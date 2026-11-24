@@ -16,12 +16,6 @@ jobs:
 
     runs-on: ubuntu-latest
 
-    services:
-      sqld:
-        image: ghcr.io/tursodatabase/libsql-server:latest
-        ports:
-          - 8080:8080
-
     steps:
     - uses: actions/checkout@v3
 
@@ -57,6 +51,9 @@ jobs:
         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
         restore-keys: ${{ runner.os }}-cargo-
 
+    - name: Build sqld server
+      run: cargo build --release -p libsql-server
+
     - name: Build sql-experimental
       run: cargo b -j16 --release -p sql-experimental
 
@@ -68,10 +65,30 @@ jobs:
         path: "go-libsql"
 
     - name: Copy sql-experimental library to go-libsql
-      run: cp target/release/libsql_experimental.a go-libsql/lib/darwin_arm64/
-           && cp target/release/libsql_experimental.a go-libsql/lib/linux_amd64/
-           && cp target/release/libsql_experimental.a go-libsql/lib/linux_arm64/
-           && cp bindings/c/include/libsql.h go-libsql/lib/include/
+      run: |
+        # cgo expects native objects without the optional LLVM LTO sections.
+        objcopy --remove-section .llvmbc --remove-section .llvmcmd \
+          target/release/libsql_experimental.a go-libsql/lib/linux_amd64/libsql_experimental.a
+        cp bindings/c/include/libsql.h go-libsql/lib/include/
+
+    - name: Start sqld server
+      run: |
+        sqld_log="$RUNNER_TEMP/sqld.log"
+        ./target/release/sqld --http-listen-addr 127.0.0.1:8080 > "$sqld_log" 2>&1 &
+        sqld_pid=$!
+        for i in {1..30}; do
+          if curl --fail --silent --max-time 2 http://127.0.0.1:8080/health > /dev/null; then
+            exit 0
+          fi
+          if ! kill -0 "$sqld_pid"; then
+            break
+          fi
+          echo "Waiting for server... ($i/30)"
+          sleep 1
+        done
+        echo "sqld failed its health check"
+        cat "$sqld_log"
+        exit 1
 
     - name: Run go-libsql tests
       working-directory: go-libsql

@@ -458,15 +458,17 @@ impl TryFrom<&libsql_replication::rpc::proxy::Value> for Value {
             Blob(Vec<u8>),
         }
 
-        Ok(
-            match bincode::deserialize::<'_, BincodeValue>(&value.data[..]).map_err(Error::from)? {
-                BincodeValue::Null => Value::Null,
-                BincodeValue::Integer(i) => Value::Integer(i),
-                BincodeValue::Real(x) => Value::Real(x),
-                BincodeValue::Text(s) => Value::Text(s),
-                BincodeValue::Blob(b) => Value::Blob(b),
-            },
-        )
+        let config = bincode::config::legacy();
+        let (decoded, _) =
+            bincode::serde::decode_from_slice::<BincodeValue, _>(&value.data[..], config)
+                .map_err(Error::from)?;
+        Ok(match decoded {
+            BincodeValue::Null => Value::Null,
+            BincodeValue::Integer(i) => Value::Integer(i),
+            BincodeValue::Real(x) => Value::Real(x),
+            BincodeValue::Text(s) => Value::Text(s),
+            BincodeValue::Blob(b) => Value::Blob(b),
+        })
     }
 }
 

@@ -31,9 +31,9 @@ use config::{
 use futures::future::ready;
 use futures::Future;
 use http::user::UserApi;
-use hyper::client::HttpConnector;
 use hyper::Uri;
 use hyper_rustls::HttpsConnector;
+use hyper_util::client::legacy::connect::HttpConnector;
 use libsql_replication::rpc::replication::BoxReplicationService;
 use libsql_sys::wal::Sqlite3WalManager;
 use namespace::meta_store::MetaStoreHandle;
@@ -75,7 +75,6 @@ pub use hrana::proto as hrana_proto;
 
 mod database;
 mod error;
-mod h2c;
 mod heartbeat;
 mod hrana;
 mod http;
@@ -118,9 +117,6 @@ type MakeReplicationSvc = Box<
         + Send
         + 'static,
 >;
-
-// #[global_allocator]
-// static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[global_allocator]
 static GLOBAL: rheaper::Allocator<std::alloc::System> =
@@ -920,7 +916,7 @@ where
         })
     }
 
-    async fn get_client_config(&self) -> anyhow::Result<Option<(Channel, hyper::Uri)>> {
+    async fn get_client_config(&self) -> anyhow::Result<Option<(Channel, Uri)>> {
         match self.rpc_client_config {
             Some(ref config) => Ok(Some(config.configure().await?)),
             None => Ok(None),

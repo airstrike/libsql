@@ -1,8 +1,8 @@
 use std::time::Duration;
 
-use hyper::StatusCode;
+use axum::http::header::AUTHORIZATION;
+use http::StatusCode;
 use libsql_server::config::{AdminApiConfig, UserApiConfig};
-use s3s::header::AUTHORIZATION;
 use serde_json::json;
 use tempfile::tempdir;
 

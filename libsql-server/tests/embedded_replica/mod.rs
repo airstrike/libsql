@@ -1438,8 +1438,9 @@ fn replicate_auth() {
                         auth_key: None,
                     }),
                     rpc_client_config: Some(RpcClientConfig {
-                        remote_url: "http://primary:4567".into(),
                         connector: TurmoilConnector,
+                        remote_url: "http://primary:4567".into(),
+
                         tls_config: None,
                     }),
                     ..Default::default()

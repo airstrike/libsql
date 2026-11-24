@@ -68,8 +68,9 @@ pub fn make_cluster(sim: &mut Sim, num_replica: usize, disable_namespaces: bool)
                         auth_key: None,
                     }),
                     rpc_client_config: Some(RpcClientConfig {
-                        remote_url: "http://primary:4567".into(),
                         connector: TurmoilConnector,
+                        remote_url: "http://primary:4567".into(),
+
                         tls_config: None,
                     }),
                     disable_namespaces,

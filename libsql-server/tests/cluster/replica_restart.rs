@@ -19,6 +19,7 @@ use crate::common::{
 #[test]
 fn replica_restart() {
     let mut sim = Builder::new()
+        .tcp_capacity(4096 * 30)
         .simulation_duration(Duration::from_secs(1000))
         .build();
     let tmp = tempdir().unwrap();
@@ -49,12 +50,15 @@ fn replica_restart() {
         }
     });
 
-    let notify = Arc::new(Notify::new());
+    let restart = Arc::new(Notify::new());
+    let restarted = Arc::new(Notify::new());
     let tmp = tempdir().unwrap();
-    let notify_clone = notify.clone();
+    let restart_listener = restart.clone();
+    let restart_complete = restarted.clone();
     sim.host("replica", move || {
         let path = tmp.path().to_path_buf();
-        let notify = notify_clone.clone();
+        let restart = restart_listener.clone();
+        let restarted = restart_complete.clone();
         async move {
             let make_server = || {
                 let path = path.clone();
@@ -71,8 +75,9 @@ fn replica_restart() {
                             auth_key: None,
                         }),
                         rpc_client_config: Some(RpcClientConfig {
-                            remote_url: "http://primary:4567".into(),
                             connector: TurmoilConnector,
+                            remote_url: "http://primary:4567".into(),
+
                             tls_config: None,
                         }),
                         ..Default::default()
@@ -81,15 +86,19 @@ fn replica_restart() {
             };
 
             let server = make_server().await;
-
+            let shutdown = server.shutdown.clone();
+            let running = server.start_sim(8080);
+            tokio::pin!(running);
             tokio::select! {
-                res = server.start_sim(8080) => {
-                    res.unwrap()
+                result = &mut running => result?,
+                _ = restart.notified() => {
+                    shutdown.notify_waiters();
+                    running.await?;
                 }
-                _ = notify.notified() => (),
             }
 
             let server = make_server().await;
+            restarted.notify_one();
             server.start_sim(8080).await.unwrap();
 
             Ok(())
@@ -111,48 +120,36 @@ fn replica_restart() {
 
         let primary_index = http
             .get("http://primary:9090/v1/namespaces/default/stats")
-            .await
-            .unwrap()
+            .await?
             .json_value()
-            .await
-            .unwrap()["replication_index"]
-            .clone()
-            .as_i64();
+            .await?["replication_index"]
+            .as_u64()
+            .unwrap();
 
-        loop {
-            let replica_index = http
-                .get("http://primary:9090/v1/namespaces/default/stats")
-                .await
-                .unwrap()
-                .json_value()
-                .await
-                .unwrap()["replication_index"]
-                .clone()
-                .as_i64();
-            if primary_index == replica_index {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        let wait_for_replica = || async {
+            tokio::time::timeout(Duration::from_secs(10), async {
+                let http = Client::new();
+                loop {
+                    if let Ok(response) = http
+                        .get("http://replica:9090/v1/namespaces/default/stats")
+                        .await
+                    {
+                        if response.json_value().await?["replication_index"].as_u64()
+                            == Some(primary_index)
+                        {
+                            return Ok::<(), anyhow::Error>(());
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            })
+            .await?
+        };
 
-        notify.notify_waiters();
-
-        // make sure that replica is up to date
-        loop {
-            let replica_index = http
-                .get("http://primary:9090/v1/namespaces/default/stats")
-                .await
-                .unwrap()
-                .json_value()
-                .await
-                .unwrap()["replication_index"]
-                .clone()
-                .as_i64();
-            if primary_index == replica_index {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        wait_for_replica().await?;
+        restart.notify_one();
+        restarted.notified().await;
+        wait_for_replica().await?;
 
         Ok(())
     });
@@ -247,8 +244,9 @@ fn primary_regenerate_log_no_replica_restart() {
                             auth_key: None,
                         }),
                         rpc_client_config: Some(RpcClientConfig {
-                            remote_url: "http://primary:4567".into(),
                             connector: TurmoilConnector,
+                            remote_url: "http://primary:4567".into(),
+
                             tls_config: None,
                         }),
                         ..Default::default()
@@ -429,8 +427,9 @@ fn primary_regenerate_log_with_replica_restart() {
                             auth_key: None,
                         }),
                         rpc_client_config: Some(RpcClientConfig {
-                            remote_url: "http://primary:4567".into(),
                             connector: TurmoilConnector,
+                            remote_url: "http://primary:4567".into(),
+
                             tls_config: None,
                         }),
                         ..Default::default()
