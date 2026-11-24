@@ -11,9 +11,11 @@ use crate::{Error, Rows, Statement};
 use bytes::Bytes;
 use futures::future::BoxFuture;
 use futures::Stream;
+use futures::TryStreamExt;
 use http::header::AUTHORIZATION;
 use http::{HeaderValue, StatusCode};
 use http_body_util::BodyExt;
+use hyper::body::Body as _;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -45,7 +47,9 @@ impl HttpSender {
         let version = HeaderValue::try_from(format!("libsql-remote-{ver}")).unwrap();
         let namespace = namespace.map(|v| HeaderValue::try_from(v).unwrap());
 
-        let inner = hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new()).build(connector);
+        let inner = hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+            .pool_timer(hyper_util::rt::TokioTimer::new())
+            .build(connector);
         Self {
             inner,
             version,
@@ -87,21 +91,18 @@ impl HttpSender {
                 .await
                 .map_err(HranaError::from)?
                 .to_bytes();
-            let body = String::from_utf8(body.into()).unwrap();
+            let body = String::from_utf8_lossy(&body);
             return Err(HranaError::Api(format!("status={}, body={}", status, body)));
         }
 
-        // Use Limited::collect for bounded body collection (hyper 1.0 best practice)
-        const MAX_BODY_SIZE: usize = 10 * 1024 * 1024; // 10MB limit
-        let limited = http_body_util::Limited::new(resp.into_body(), MAX_BODY_SIZE);
-        let body = limited
-            .collect()
-            .await
-            .map_err(|e| HranaError::Http(format!("Body collection failed: {}", e)))?
-            .to_bytes();
-        let body: super::HttpBody<ByteStream> = super::HttpBody::from(body);
-
-        Ok(body)
+        let body = resp.into_body();
+        if body.is_end_stream() {
+            let bytes = body.collect().await.map_err(HranaError::from)?.to_bytes();
+            Ok(super::HttpBody::from(bytes))
+        } else {
+            let stream = body.into_data_stream().map_err(std::io::Error::other);
+            Ok(super::HttpBody::Stream(Box::new(stream)))
+        }
     }
 }
 

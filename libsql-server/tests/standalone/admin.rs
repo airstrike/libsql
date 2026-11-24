@@ -8,7 +8,7 @@ use tempfile::tempdir;
 
 use crate::common::{
     http::Client,
-    net::{SimServer as _, TestServer, TurmoilAcceptor},
+    net::{SimServer as _, TestServer, TurmoilAcceptor, TurmoilConnector},
 };
 
 #[test]
@@ -27,6 +27,7 @@ fn admin_auth() {
             },
             admin_api_config: Some(AdminApiConfig {
                 acceptor: TurmoilAcceptor::bind(([0, 0, 0, 0], 9090)).await.unwrap(),
+                connector: TurmoilConnector,
                 disable_metrics: true,
                 auth_key: Some("secretkey".into()),
             }),

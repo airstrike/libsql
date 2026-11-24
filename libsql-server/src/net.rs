@@ -77,7 +77,7 @@ pub trait Connector:
     + 'static
     + Clone
 {
-    type Conn: Unpin + Send + 'static + AsyncRead + AsyncWrite + Read + Write + Connection;
+    type Conn: Unpin + Send + 'static + Read + Write + Connection;
     type Fut: Send + 'static + Unpin;
     type Err: Into<Box<dyn StdError + Send + Sync>> + Send + Sync;
 }
@@ -85,7 +85,7 @@ pub trait Connector:
 impl<T> Connector for T
 where
     T: Service<Uri> + Send + Sync + 'static + Clone,
-    T::Response: Unpin + Send + 'static + AsyncRead + AsyncWrite + Read + Write + Connection,
+    T::Response: Unpin + Send + 'static + Read + Write + Connection,
     T::Future: Send + 'static + Unpin,
     T::Error: Into<Box<dyn StdError + Send + Sync>> + Send + Sync,
 {

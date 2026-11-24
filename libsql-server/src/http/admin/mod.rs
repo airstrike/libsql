@@ -1,6 +1,5 @@
-use anyhow::Context as _;
 use axum::body::Body;
-use axum::extract::{DefaultBodyLimit, FromRef, Path, State};
+use axum::extract::{FromRef, Path, State};
 use axum::middleware::Next;
 use axum::response::Response;
 use axum::routing::delete;
@@ -23,7 +22,6 @@ use std::time::Duration;
 use tokio::sync::Notify;
 use tokio_util::io::{CopyToBytes, ReaderStream, SinkWriter};
 use tokio_util::sync::PollSender;
-use tower::Service;
 use tower_http::trace::DefaultOnResponse;
 use url::Url;
 
@@ -48,25 +46,27 @@ impl Metrics {
     }
 }
 
-struct AppState {
+struct AppState<C> {
     namespaces: NamespaceStore,
     user_http_server: Arc<hrana::http::Server>,
+    connector: C,
     metrics: Metrics,
     set_env_filter: Option<Box<dyn Fn(&str) -> anyhow::Result<()> + Sync + Send + 'static>>,
 }
 
-impl FromRef<Arc<AppState>> for Metrics {
-    fn from_ref(input: &Arc<AppState>) -> Self {
+impl<C> FromRef<Arc<AppState<C>>> for Metrics {
+    fn from_ref(input: &Arc<AppState<C>>) -> Self {
         input.metrics.clone()
     }
 }
 
 static PROM_HANDLE: Mutex<OnceCell<PrometheusHandle>> = Mutex::new(OnceCell::new());
 
-pub async fn run<A>(
+pub async fn run<A, C>(
     acceptor: A,
     user_http_server: Arc<hrana::http::Server>,
     namespaces: NamespaceStore,
+    connector: C,
     disable_metrics: bool,
     shutdown: Arc<Notify>,
     auth: Option<Arc<str>>,
@@ -74,6 +74,7 @@ pub async fn run<A>(
 ) -> anyhow::Result<()>
 where
     A: crate::net::Accept,
+    C: Connector,
 {
     let app_label = std::env::var("SQLD_APP_LABEL").ok();
     let ver = env!("CARGO_PKG_VERSION");
@@ -174,6 +175,7 @@ where
         .route("/log-filter", post(handle_set_log_filter))
         .with_state(Arc::new(AppState {
             namespaces: namespaces.clone(),
+            connector,
             user_http_server,
             metrics,
             set_env_filter,
@@ -186,8 +188,7 @@ where
                         .level(tracing::Level::DEBUG)
                         .latency_unit(tower_http::LatencyUnit::Micros),
                 ),
-        )
-        .layer(DefaultBodyLimit::max(10 * 1024 * 1024)); // 10MB limit
+        );
 
     let admin_shell = crate::admin_shell::make_svc(namespaces.clone());
     let grpc_router = tonic::transport::Server::builder()
@@ -201,87 +202,7 @@ where
         .merge(grpc_router)
         .layer(axum::middleware::from_fn_with_state(auth, auth_middleware));
 
-    // Serve connections using the custom Accept trait (hyper 1.0 compatible)
-    task_manager_spawn_accept_loop(acceptor, router, shutdown)
-        .await
-        .context("Could not bind admin HTTP API server")?;
-
-    Ok(())
-}
-
-/// Convert axum Router to a service that can handle hyper 1.0 Request<Incoming>
-/// Uses hyper::service::service_fn for compatibility with hyper 1.0's Service trait
-pub fn router_to_service(
-    router: axum::Router,
-) -> impl hyper::service::Service<
-    hyper::Request<hyper::body::Incoming>,
-    Response = hyper::Response<axum::body::Body>,
-    Error = std::io::Error,
-    Future = impl std::future::Future<
-        Output = Result<hyper::Response<axum::body::Body>, std::io::Error>,
-    >,
-> + Clone {
-    // Create a service from the router that handles Request<Incoming>
-    // Using hyper::service::service_fn which implements hyper::service::Service
-    hyper::service::service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
-        let mut router = router.clone();
-        async move {
-            // Convert Incoming body to axum Body
-            // by collecting the body into bytes first
-            let (parts, body) = req.into_parts();
-            let collected = body
-                .collect()
-                .await
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-            let bytes = collected.to_bytes();
-            let body = axum::body::Body::from(bytes);
-            let req = hyper::Request::from_parts(parts, body);
-
-            // Call the router and convert Infallible error to io::Error
-            router.call(req).await.map_err(|e| match e {})
-        }
-    })
-}
-
-/// Spawn a task that serves connections from the acceptor
-async fn task_manager_spawn_accept_loop<A>(
-    mut acceptor: A,
-    router: axum::Router,
-    shutdown: Arc<tokio::sync::Notify>,
-) -> anyhow::Result<()>
-where
-    A: crate::net::Accept,
-{
-    use std::future::poll_fn;
-
-    let shutdown = shutdown.notified();
-    tokio::pin!(shutdown);
-
-    loop {
-        let conn = tokio::select! {
-            biased;
-            _ = &mut shutdown => break,
-            conn = poll_fn(|cx| Pin::new(&mut acceptor).poll_accept(cx)) => conn,
-        };
-
-        let conn = match conn {
-            Some(Ok(conn)) => conn,
-            Some(Err(e)) => {
-                tracing::error!("accept error: {}", e);
-                continue;
-            }
-            None => break,
-        };
-
-        let svc = router_to_service(router.clone());
-        tokio::spawn(async move {
-            let builder =
-                hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new());
-            let _ = builder
-                .serve_connection(hyper_util::rt::tokio::TokioIo::new(conn), svc)
-                .await;
-        });
-    }
+    super::serve(acceptor, router, shutdown, false).await;
 
     Ok(())
 }
@@ -322,8 +243,8 @@ async fn handle_metrics(State(metrics): State<Metrics>) -> String {
     metrics.render()
 }
 
-async fn handle_get_config(
-    State(app_state): State<Arc<AppState>>,
+async fn handle_get_config<C: Connector>(
+    State(app_state): State<Arc<AppState<C>>>,
     Path(namespace): Path<String>,
 ) -> crate::Result<Json<HttpDatabaseConfig>> {
     let store = app_state
@@ -346,8 +267,8 @@ async fn handle_get_config(
     Ok(Json(resp))
 }
 
-async fn handle_diagnostics(
-    State(app_state): State<Arc<AppState>>,
+async fn handle_diagnostics<C>(
+    State(app_state): State<Arc<AppState<C>>>,
 ) -> crate::Result<Json<Vec<String>>> {
     use crate::connection::Connection;
     use hrana::http::stream;
@@ -393,8 +314,8 @@ struct HttpDatabaseConfig {
     durability_mode: Option<DurabilityMode>,
 }
 
-async fn handle_post_config(
-    State(app_state): State<Arc<AppState>>,
+async fn handle_post_config<C>(
+    State(app_state): State<Arc<AppState<C>>>,
     Path(namespace): Path<String>,
     Json(req): Json<HttpDatabaseConfig>,
 ) -> crate::Result<()> {
@@ -465,8 +386,8 @@ struct CreateNamespaceReq {
     durability_mode: Option<DurabilityMode>,
 }
 
-async fn handle_create_namespace(
-    State(app_state): State<Arc<AppState>>,
+async fn handle_create_namespace<C: Connector>(
+    State(app_state): State<Arc<AppState<C>>>,
     Path(namespace): Path<NamespaceName>,
     Json(req): Json<CreateNamespaceReq>,
 ) -> crate::Result<()> {
@@ -499,12 +420,8 @@ async fn handle_create_namespace(
     }
 
     let dump = match req.dump_url {
-        Some(ref _url) => {
-            // TODO: Re-enable dump from URL after fixing connector for hyper 1.0
-            // RestoreOption::Dump(dump_stream_from_url(_url, app_state.connector.clone()).await?)
-            return Err(Error::Internal(
-                "Dump from URL temporarily disabled".to_string(),
-            ));
+        Some(ref url) => {
+            RestoreOption::Dump(dump_stream_from_url(url, app_state.connector.clone()).await?)
         }
         None => RestoreOption::Latest,
     };
@@ -530,8 +447,8 @@ struct ForkNamespaceReq {
     timestamp: NaiveDateTime,
 }
 
-async fn handle_fork_namespace(
-    State(app_state): State<Arc<AppState>>,
+async fn handle_fork_namespace<C>(
+    State(app_state): State<Arc<AppState<C>>>,
     Path((from, to)): Path<(String, String)>,
     req: Option<Json<ForkNamespaceReq>>,
 ) -> crate::Result<()> {
@@ -554,7 +471,6 @@ async fn handle_fork_namespace(
     Ok(())
 }
 
-#[allow(dead_code)]
 async fn dump_stream_from_url<C>(url: &Url, connector: C) -> Result<DumpStream, LoadDumpError>
 where
     C: Connector,
@@ -601,8 +517,8 @@ struct DeleteNamespaceReq {
     pub keep_backup: bool,
 }
 
-async fn handle_delete_namespace(
-    State(app_state): State<Arc<AppState>>,
+async fn handle_delete_namespace<C>(
+    State(app_state): State<Arc<AppState<C>>>,
     Path(namespace): Path<String>,
     payload: Option<Json<DeleteNamespaceReq>>,
 ) -> crate::Result<()> {
@@ -618,8 +534,8 @@ async fn handle_delete_namespace(
     Ok(())
 }
 
-async fn handle_set_log_filter(
-    State(app_state): State<Arc<AppState>>,
+async fn handle_set_log_filter<C>(
+    State(app_state): State<Arc<AppState<C>>>,
     body: String,
 ) -> crate::Result<()> {
     if let Some(ref cb) = app_state.set_env_filter {
@@ -628,8 +544,8 @@ async fn handle_set_log_filter(
     Ok(())
 }
 
-async fn handle_checkpoint(
-    State(app_state): State<Arc<AppState>>,
+async fn handle_checkpoint<C>(
+    State(app_state): State<Arc<AppState<C>>>,
     Path(namespace): Path<NamespaceName>,
 ) -> crate::Result<()> {
     app_state.namespaces.checkpoint(namespace).await?;

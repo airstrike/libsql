@@ -2,22 +2,24 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Context;
+use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
 use libsql_sys::EncryptionConfig;
 use sha256::try_digest;
 use tokio::time::Duration;
 use tonic::transport::Channel;
+use tower::ServiceExt;
 
 use crate::auth::{Auth, Disabled};
-use crate::net::AddrIncoming;
+use crate::net::{AddrIncoming, Connector};
 
-pub struct RpcClientConfig {
+pub struct RpcClientConfig<C = HttpConnector> {
     pub remote_url: String,
     pub tls_config: Option<TlsConfig>,
-    pub connector: HttpConnector,
+    pub connector: C,
 }
 
-impl RpcClientConfig {
+impl<C: Connector> RpcClientConfig<C> {
     pub(crate) async fn configure(&self) -> anyhow::Result<(Channel, tonic::transport::Uri)> {
         let uri = tonic::transport::Uri::from_maybe_shared(self.remote_url.clone())?;
         let mut builder = Channel::builder(uri.clone());
@@ -36,7 +38,8 @@ impl RpcClientConfig {
             builder = builder.tls_config(tls_config)?;
         }
 
-        let channel = builder.connect_with_connector_lazy(self.connector.clone());
+        let channel =
+            builder.connect_with_connector_lazy(self.connector.clone().map_err(Into::into));
 
         Ok((channel, uri))
     }
@@ -76,8 +79,9 @@ impl<A> Default for UserApiConfig<A> {
     }
 }
 
-pub struct AdminApiConfig<A = AddrIncoming> {
+pub struct AdminApiConfig<A = AddrIncoming, C = HttpsConnector<HttpConnector>> {
     pub acceptor: A,
+    pub connector: C,
     pub disable_metrics: bool,
     pub auth_key: Option<String>,
 }

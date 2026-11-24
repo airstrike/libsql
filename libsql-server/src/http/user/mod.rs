@@ -14,7 +14,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use axum::body::Body;
 use axum::extract::Request;
-use axum::extract::{DefaultBodyLimit, FromRef, FromRequest, FromRequestParts, Path as AxumPath, State as AxumState};
+use axum::extract::{FromRef, FromRequest, FromRequestParts, Path as AxumPath, State as AxumState};
 use axum::http::request::Parts;
 use axum::http::HeaderValue;
 use axum::response::Response;
@@ -437,8 +437,8 @@ where
 
             let grpc_router = Server::builder()
                 .accept_http1(true)
-                .add_service(replication)
-                .add_service(write_proxy);
+                .add_service(tonic_web::enable(replication))
+                .add_service(tonic_web::enable(write_proxy));
             // Convert to axum Router - into_router() is deprecated but functional
             #[allow(deprecated)]
             let grpc_router = grpc_router.into_router();
@@ -460,58 +460,15 @@ where
                 ))
                 .layer(
                     cors::CorsLayer::new()
-                        .allow_methods([
-                            http::Method::GET,
-                            http::Method::POST,
-                            http::Method::PUT,
-                            http::Method::DELETE,
-                            http::Method::OPTIONS,
-                        ])
-                        .allow_headers([
-                            http::header::AUTHORIZATION,
-                            http::header::CONTENT_TYPE,
-                            http::header::ACCEPT,
-                        ])
-                        .allow_origin(cors::Any), // TODO: Configure specific origins in production
-                )
-                .layer(DefaultBodyLimit::max(10 * 1024 * 1024)); // 10MB limit
+                        .allow_methods(cors::AllowMethods::any())
+                        .allow_headers(cors::Any)
+                        .allow_origin(cors::Any),
+                );
 
             let router = router.fallback(handle_fallback);
 
             task_manager.spawn_with_shutdown_notify(|shutdown| async move {
-                let builder =
-                    hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new());
-
-                let mut acceptor = acceptor;
-
-                let shutdown = shutdown.notified();
-                tokio::pin!(shutdown);
-
-                loop {
-                    let conn = tokio::select! {
-                        biased;
-                        _ = &mut shutdown => break,
-                        conn = std::future::poll_fn(|cx| std::pin::Pin::new(&mut acceptor).poll_accept(cx)) => conn,
-                    };
-
-                    let conn = match conn {
-                        Some(Ok(conn)) => conn,
-                        Some(Err(e)) => {
-                            tracing::error!("accept error: {}", e);
-                            continue;
-                        }
-                        None => break,
-                    };
-
-                    let svc = crate::http::admin::router_to_service(router.clone());
-
-                    let builder = builder.clone();
-                    tokio::spawn(async move {
-                        let _ = builder
-                            .serve_connection(hyper_util::rt::tokio::TokioIo::new(conn), svc)
-                            .await;
-                    });
-                }
+                super::serve(acceptor, router, shutdown, true).await;
                 Ok(())
             });
         }

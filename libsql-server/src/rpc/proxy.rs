@@ -142,10 +142,15 @@ pub mod rpc {
                 }
                 query::Params::Named(named) => {
                     let config = bincode::config::legacy();
-                    let values = named.values.iter().map(|v| -> Result<crate::query::Value, SqldError> {
-                        let (decoded, _) = bincode::serde::decode_from_slice(&v.data, config)?;
-                        Ok(decoded)
-                    });
+                    let values =
+                        named
+                            .values
+                            .iter()
+                            .map(|v| -> Result<crate::query::Value, SqldError> {
+                                let (decoded, _) =
+                                    bincode::serde::decode_from_slice(&v.data, config)?;
+                                Ok(decoded)
+                            });
                     let params = itertools::process_results(values, |values| {
                         named.names.into_iter().zip(values).collect()
                     })?;

@@ -32,10 +32,13 @@ use futures::future::ready;
 use futures::Future;
 use http::user::UserApi;
 use hyper::Uri;
+use hyper_rustls::HttpsConnector;
+use hyper_util::client::legacy::connect::HttpConnector;
 use libsql_replication::rpc::replication::BoxReplicationService;
 use libsql_sys::wal::Sqlite3WalManager;
 use namespace::meta_store::MetaStoreHandle;
 use namespace::NamespaceName;
+use net::Connector;
 use once_cell::sync::Lazy;
 use rusqlite::ffi::SQLITE_CONFIG_MALLOC;
 use rusqlite::ffi::{sqlite3_config, SQLITE_CONFIG_PCACHE2};
@@ -119,13 +122,13 @@ type MakeReplicationSvc = Box<
 static GLOBAL: rheaper::Allocator<std::alloc::System> =
     rheaper::Allocator::from_allocator(std::alloc::System);
 
-pub struct Server<A = AddrIncoming> {
+pub struct Server<C = HttpConnector, A = AddrIncoming, D = HttpsConnector<HttpConnector>> {
     pub path: Arc<Path>,
     pub db_config: DbConfig,
     pub user_api_config: UserApiConfig<A>,
-    pub admin_api_config: Option<AdminApiConfig<A>>,
+    pub admin_api_config: Option<AdminApiConfig<A, D>>,
     pub rpc_server_config: Option<RpcServerConfig<A>>,
-    pub rpc_client_config: Option<RpcClientConfig>,
+    pub rpc_client_config: Option<RpcClientConfig<C>>,
     pub idle_shutdown_timeout: Option<Duration>,
     pub initial_idle_shutdown_timeout: Option<Duration>,
     pub disable_default_namespace: bool,
@@ -137,6 +140,7 @@ pub struct Server<A = AddrIncoming> {
     pub max_concurrent_connections: usize,
     pub shutdown_timeout: std::time::Duration,
     pub storage_server_address: String,
+    pub connector: Option<D>,
     pub migrate_bottomless: bool,
     pub enable_deadlock_monitor: bool,
     pub should_sync_from_storage: bool,
@@ -145,7 +149,7 @@ pub struct Server<A = AddrIncoming> {
     pub set_log_level: Option<Box<dyn Fn(&str) -> anyhow::Result<()> + Send + Sync + 'static>>,
 }
 
-impl<A> Default for Server<A> {
+impl<C, A, D> Default for Server<C, A, D> {
     fn default() -> Self {
         Self {
             path: PathBuf::from("data.sqld").into(),
@@ -165,6 +169,7 @@ impl<A> Default for Server<A> {
             max_concurrent_connections: 128,
             shutdown_timeout: Duration::from_secs(30),
             storage_server_address: Default::default(),
+            connector: None,
             migrate_bottomless: false,
             enable_deadlock_monitor: false,
             should_sync_from_storage: false,
@@ -175,13 +180,13 @@ impl<A> Default for Server<A> {
     }
 }
 
-struct Services<A, P, S> {
+struct Services<A, P, S, C> {
     namespace_store: NamespaceStore,
     idle_shutdown_kicker: Option<IdleShutdownKicker>,
     proxy_service: P,
     replication_service: S,
     user_api_config: UserApiConfig<A>,
-    admin_api_config: Option<AdminApiConfig<A>>,
+    admin_api_config: Option<AdminApiConfig<A, C>>,
     disable_namespaces: bool,
     disable_default_namespace: bool,
     db_config: DbConfig,
@@ -259,11 +264,12 @@ impl TaskManager {
     }
 }
 
-impl<A, P, S> Services<A, P, S>
+impl<A, P, S, C> Services<A, P, S, C>
 where
     A: crate::net::Accept,
     P: Proxy,
     S: ReplicationLog,
+    C: Connector,
 {
     fn configure(mut self, task_manager: &mut TaskManager) {
         let user_http = UserApi {
@@ -286,6 +292,7 @@ where
 
         if let Some(AdminApiConfig {
             acceptor,
+            connector,
             disable_metrics,
             auth_key,
         }) = self.admin_api_config
@@ -295,6 +302,7 @@ where
                     acceptor,
                     user_http_service,
                     self.namespace_store,
+                    connector,
                     disable_metrics,
                     shutdown,
                     auth_key.map(Into::into),
@@ -432,9 +440,11 @@ fn install_deadlock_monitor() {
     });
 }
 
-impl<A> Server<A>
+impl<C, A, D> Server<C, A, D>
 where
+    C: Connector,
     A: Accept,
+    D: Connector,
 {
     /// Setup sqlite global environment
     fn init_sqlite_globals(&self) {
@@ -502,7 +512,7 @@ where
         proxy_service: P,
         replication_service: L,
         user_auth_strategy: Auth,
-    ) -> Services<A, P, L> {
+    ) -> Services<A, P, L, D> {
         Services {
             namespace_store,
             idle_shutdown_kicker,

@@ -32,7 +32,7 @@ fn replica_restart() {
                 },
                 admin_api_config: Some(AdminApiConfig {
                     acceptor: TurmoilAcceptor::bind(([0, 0, 0, 0], 9090)).await?,
-
+                    connector: TurmoilConnector,
                     disable_metrics: true,
                     auth_key: None,
                 }),
@@ -66,12 +66,12 @@ fn replica_restart() {
                         },
                         admin_api_config: Some(AdminApiConfig {
                             acceptor: TurmoilAcceptor::bind(([0, 0, 0, 0], 9090)).await.unwrap(),
-
+                            connector: TurmoilConnector,
                             disable_metrics: true,
                             auth_key: None,
                         }),
                         rpc_client_config: Some(RpcClientConfig {
-                            connector: hyper_util::client::legacy::connect::HttpConnector::new(),
+                            connector: TurmoilConnector,
                             remote_url: "http://primary:4567".into(),
 
                             tls_config: None,
@@ -188,7 +188,7 @@ fn primary_regenerate_log_no_replica_restart() {
                     },
                     admin_api_config: Some(AdminApiConfig {
                         acceptor: TurmoilAcceptor::bind(([0, 0, 0, 0], 9090)).await.unwrap(),
-
+                        connector: TurmoilConnector,
                         disable_metrics: true,
                         auth_key: None,
                     }),
@@ -243,12 +243,12 @@ fn primary_regenerate_log_no_replica_restart() {
                         },
                         admin_api_config: Some(AdminApiConfig {
                             acceptor: TurmoilAcceptor::bind(([0, 0, 0, 0], 9090)).await.unwrap(),
-
+                            connector: TurmoilConnector,
                             disable_metrics: true,
                             auth_key: None,
                         }),
                         rpc_client_config: Some(RpcClientConfig {
-                            connector: hyper_util::client::legacy::connect::HttpConnector::new(),
+                            connector: TurmoilConnector,
                             remote_url: "http://primary:4567".into(),
 
                             tls_config: None,
@@ -369,7 +369,7 @@ fn primary_regenerate_log_with_replica_restart() {
                     },
                     admin_api_config: Some(AdminApiConfig {
                         acceptor: TurmoilAcceptor::bind(([0, 0, 0, 0], 9090)).await.unwrap(),
-
+                        connector: TurmoilConnector,
                         disable_metrics: true,
                         auth_key: None,
                     }),
@@ -426,12 +426,12 @@ fn primary_regenerate_log_with_replica_restart() {
                         },
                         admin_api_config: Some(AdminApiConfig {
                             acceptor: TurmoilAcceptor::bind(([0, 0, 0, 0], 9090)).await.unwrap(),
-
+                            connector: TurmoilConnector,
                             disable_metrics: true,
                             auth_key: None,
                         }),
                         rpc_client_config: Some(RpcClientConfig {
-                            connector: hyper_util::client::legacy::connect::HttpConnector::new(),
+                            connector: TurmoilConnector,
                             remote_url: "http://primary:4567".into(),
 
                             tls_config: None,

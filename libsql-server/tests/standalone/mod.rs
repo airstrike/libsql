@@ -32,6 +32,7 @@ async fn make_standalone_server() -> Result<(), Box<dyn std::error::Error>> {
         },
         admin_api_config: Some(AdminApiConfig {
             acceptor: TurmoilAcceptor::bind(([0, 0, 0, 0], 9090)).await.unwrap(),
+            connector: TurmoilConnector,
             disable_metrics: true,
             auth_key: None,
         }),
@@ -354,6 +355,7 @@ fn dirty_startup_dont_prevent_namespace_creation() {
             },
             admin_api_config: Some(AdminApiConfig {
                 acceptor: TurmoilAcceptor::bind(([0, 0, 0, 0], 9090)).await.unwrap(),
+                connector: TurmoilConnector,
                 disable_metrics: true,
                 auth_key: None,
             }),

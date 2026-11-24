@@ -499,9 +499,15 @@ async fn make_admin_api_config(config: &Cli) -> anyhow::Result<Option<AdminApiCo
             let acceptor = AddrIncoming::new(tokio::net::TcpListener::bind(addr).await?);
 
             tracing::info!("listening for incoming admin HTTP connection on {}", addr);
+            let connector = hyper_rustls::HttpsConnectorBuilder::new()
+                .with_native_roots()?
+                .https_or_http()
+                .enable_http1()
+                .build();
 
             Ok(Some(AdminApiConfig {
                 acceptor,
+                connector,
                 disable_metrics: config.disable_metrics,
                 auth_key: config.admin_auth_key.clone(),
             }))
@@ -701,6 +707,7 @@ async fn build_server(
             .map(Duration::from_secs)
             .unwrap_or(Duration::from_secs(30)),
         storage_server_address: config.storage_server_address.clone(),
+        connector: None,
         migrate_bottomless: config.migrate_bottomless,
         enable_deadlock_monitor: config.enable_deadlock_monitor,
         should_sync_from_storage: config.sync_from_storage,
